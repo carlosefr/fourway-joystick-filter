@@ -122,7 +122,11 @@ def parse_args():
     parser.add_argument("--log", action="store", metavar="<logname>",
                               help="Log messages into 'syslog' or the specified log file.")
 
-    parser.add_argument("--joystick", dest="joynum", action="store", metavar="<index>",
+    group = parser.add_mutually_exclusive_group()
+
+    group.add_argument("--list", dest="list", action="store_true",
+                              help="List available joystick devices and their IDs in SDL enumeration order.")
+    group.add_argument("--joystick", dest="joynum", action="store", metavar="<index>",
                               help="The joystick device to filter, in SDL enumeration order (defaults to 0).",
                               type=_non_negative_integer, default=0)
 
@@ -186,6 +190,14 @@ def get_input_device_path_by_num(joynum):
     occurrence = get_identical_device_occurrence(vendor, product, joynum)
 
     return get_input_device_path_by_id(vendor, product, occurrence)
+
+
+def list_available_joystick_devices():
+    for joynum in range(pygame.joystick.get_count()):
+        joystick = pygame.joystick.Joystick(joynum)
+        joystick.init()
+
+        print(f"{joynum}: \"{joystick.get_name()}\" [{joystick.get_guid()}]")
 
 
 class FourWayHatFilterError(Exception):
@@ -286,6 +298,10 @@ class FourWayHatFilter:
 
 def main():
     args = parse_args()
+
+    if args.list:
+        list_available_joystick_devices()
+        return
 
     if not args.log:
         handler = logging.StreamHandler(sys.stderr)
