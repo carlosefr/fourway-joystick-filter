@@ -8,7 +8,7 @@
 *.log
 *~
 *.env
-*.make
+*.venv
 
 __pycache__
 .orig

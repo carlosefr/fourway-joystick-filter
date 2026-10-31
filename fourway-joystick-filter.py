@@ -9,23 +9,35 @@ import sys
 import time
 import errno
 import signal
+import syslog
 import logging
 import logging.handlers
 import functools
 
 from argparse import ArgumentParser, ArgumentTypeError
 from evdev import InputDevice, UInput, list_devices, ecodes
+from setproctitle import setproctitle
 
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
-import pygame  # flake8: noqa: E402
+import pygame  # noqa: E402
 
 
 DEVICE_NAME = "4-way joystick (virtual)"
 DEVICE_VENDOR_ID = 0x1234
 DEVICE_PRODUCT_ID = 0x0004
 
+SCRIPT_FILENAME = os.path.basename(__file__)
 
-log = logging.getLogger("fourway-joystick-filter")
+#
+# Replace the process name with the script file name instead of the default "python3".
+#
+# Caveat: Trying to kill the process with "pkill -x <SCRIPT_FILENAME>", won't work.
+#         That's because it matches against "/proc/<pid>/comm", which only contains
+#         the first 15 characters of the process' name.
+#
+setproctitle(" ".join([SCRIPT_FILENAME] + sys.argv[1:]))
+
+log = logging.getLogger(os.path.splitext(SCRIPT_FILENAME)[0])
 
 pygame.init()
 pygame.joystick.init()

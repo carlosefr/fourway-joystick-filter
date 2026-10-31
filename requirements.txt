@@ -4,3 +4,4 @@ wheel
 flake8==7.4.*
 evdev>=1.4.0,<2.0
 pygame>=2.1.2,<3.0
+setproctitle>=1.2.2,<2.0
