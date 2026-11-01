@@ -12,9 +12,11 @@ import signal
 import syslog
 import logging
 import logging.handlers
-import functools
 
 from argparse import ArgumentParser, ArgumentTypeError
+from dataclasses import dataclass, field
+from functools import partial, total_ordering
+
 from evdev import InputDevice, UInput, list_devices, ecodes
 from setproctitle import setproctitle
 
@@ -200,26 +202,58 @@ def list_available_joystick_devices():
         print(f"{joynum}: \"{joystick.get_name()}\" [{joystick.get_guid()}]")
 
 
+@total_ordering
+@dataclass(frozen=True, eq=False)
+class DirectionEvent:
+    direction: str
+    timestamp: int = field(default_factory=time.time_ns)
+
+    def __hash__(self):
+        return hash(self.direction)
+
+    def __eq__(self, other):
+        if other is None:
+            return False
+
+        if isinstance(other, type(self)):
+            return self.direction == other.direction
+
+        if isinstance(other, type(self.direction)):
+            return other == self.direction
+
+        raise NotImplementedError
+
+    def __lt__(self, other):
+        if isinstance(other, type(self)):
+            return self.timestamp < other.timestamp
+
+        if isinstance(other, type(self.direction)):
+            return False
+
+        raise NotImplementedError
+
+
 class FourWayHatFilterError(Exception):
     pass
 
 
 class FourWayHatFilter:
     @classmethod
-    def is_input_device_supported(_, in_device):
+    def is_input_device_supported(cls, in_device):
         caps = in_device.capabilities(absinfo=True)
         abs_codes = {ecode for ecode, _ in caps.get(ecodes.EV_ABS, [])}
 
         return ecodes.ABS_HAT0X in abs_codes and ecodes.ABS_HAT0Y in abs_codes
 
     @classmethod
-    def is_input_device_busy(_, in_device):
+    def is_input_device_busy(cls, in_device):
         try:
             with in_device.grab_context():
                 return False
         except OSError as e:
             if e.errno == errno.EBUSY:
                 return True
+            raise
 
     def __init__(self, in_device, out_device):
         self._in_device = in_device
@@ -244,23 +278,25 @@ class FourWayHatFilter:
             None: (0, 0),
         }
 
-        self._last_axis_value = {ecodes.ABS_HAT0X: None, ecodes.ABS_HAT0Y: None}
-        self._direction_last_held_ts = {}
+        self._last_axis_direction = {ecodes.ABS_HAT0X: None, ecodes.ABS_HAT0Y: None}
+        self._directions_held = set()
+        self._dpad_pending = False
 
-    def _update_axis(self, axis_code, value):
-        old_direction = self._HAT_AXIS_MAPPING[axis_code].get(self._last_axis_value[axis_code])
-        new_direction = self._HAT_AXIS_MAPPING[axis_code].get(value)
+    def _update_axis(self, axis_code, axis_value):
+        old_direction = self._last_axis_direction[axis_code]
+        new_direction = self._HAT_AXIS_MAPPING[axis_code].get(axis_value)
 
         if old_direction == new_direction:
             return
 
-        if old_direction and old_direction in self._direction_last_held_ts:
-            del self._direction_last_held_ts[old_direction]
+        if old_direction:
+            self._directions_held.discard(old_direction)
 
         if new_direction:
-            self._direction_last_held_ts[new_direction] = time.time_ns()
+            self._directions_held.add(DirectionEvent(new_direction))
 
-        self._last_axis_value[axis_code] = value
+        self._last_axis_direction[axis_code] = new_direction
+        self._dpad_pending = True
 
     def _emit_dpad(self):
         active = None
@@ -269,14 +305,16 @@ class FourWayHatFilter:
         # TODO: In real 4-way restricted joysticks, short-lived switches in
         #       direction aren't physically possible. We should ignore them.
         #
-        if self._direction_last_held_ts:
-            active = max(self._direction_last_held_ts, key=self._direction_last_held_ts.get)
+        if self._directions_held:
+            active = max(self._directions_held)
 
         x, y = self._HAT_DIRECTION_MAPPING.get(active)
 
         self._out_device.write(ecodes.EV_ABS, ecodes.ABS_HAT0X, x)
         self._out_device.write(ecodes.EV_ABS, ecodes.ABS_HAT0Y, y)
         self._out_device.syn()
+
+        self._dpad_pending = False
 
     def run(self):
         with self._in_device.grab_context():
@@ -285,15 +323,13 @@ class FourWayHatFilter:
             for event in self._in_device.read_loop():
                 if event.type == ecodes.EV_ABS and event.code in self._HAT_AXIS_MAPPING:
                     self._update_axis(event.code, event.value)
+                    continue
 
-                elif event.type == ecodes.EV_SYN:
-                    if event.code == ecodes.SYN_REPORT:
-                        self._emit_dpad()
-                    else:
-                        continue
+                if self._dpad_pending and event.type == ecodes.EV_SYN and event.code == ecodes.SYN_REPORT:
+                    self._emit_dpad()
+                    continue
 
-                else:
-                    self._out_device.write_event(event)
+                self._out_device.write_event(event)
 
 
 def main():
@@ -322,7 +358,7 @@ def main():
     log.setLevel(logging.DEBUG if args.verbose else logging.INFO)
 
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGQUIT):
-        signal.signal(s, functools.partial(_clean_exit_handler, "terminated" if args.log else None))
+        signal.signal(s, partial(_clean_exit_handler, "terminated" if args.log else None))
 
     if not (in_device_path := get_input_device_path_by_num(args.joynum)):
         log.error("joystick device #%d: no such device", args.joynum)
