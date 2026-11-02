@@ -299,16 +299,11 @@ class FourWayHatFilter:
         self._dpad_pending = True
 
     def _emit_dpad(self):
-        active = None
-
         #
         # TODO: In real 4-way restricted joysticks, short-lived switches in
         #       direction aren't physically possible. We should ignore them.
         #
-        if self._directions_held:
-            active = max(self._directions_held)
-
-        x, y = self._HAT_DIRECTION_MAPPING.get(active)
+        x, y = self._HAT_DIRECTION_MAPPING.get(max(self._directions_held) if self._directions_held else None)
 
         self._out_device.write(ecodes.EV_ABS, ecodes.ABS_HAT0X, x)
         self._out_device.write(ecodes.EV_ABS, ecodes.ABS_HAT0Y, y)
