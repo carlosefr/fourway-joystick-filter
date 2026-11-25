@@ -206,7 +206,7 @@ def list_available_joystick_devices():
 @dataclass(frozen=True, eq=False)
 class DirectionEvent:
     direction: str
-    timestamp: int = field(default_factory=time.time_ns)
+    timestamp: int = field(default_factory=time.monotonic_ns)
 
     def __hash__(self):
         return hash(self.direction)
@@ -280,7 +280,8 @@ class FourWayHatFilter:
 
         self._last_axis_direction = {ecodes.ABS_HAT0X: None, ecodes.ABS_HAT0Y: None}
         self._directions_held = set()
-        self._dpad_pending = False
+        self._last_emitted_direction = None
+        self._emit_dpad_pending = False
 
     def _update_axis(self, axis_code, axis_value):
         old_direction = self._last_axis_direction[axis_code]
@@ -296,20 +297,19 @@ class FourWayHatFilter:
             self._directions_held.add(DirectionEvent(new_direction))
 
         self._last_axis_direction[axis_code] = new_direction
-        self._dpad_pending = True
 
     def _emit_dpad(self):
-        #
-        # TODO: In real 4-way restricted joysticks, short-lived switches in
-        #       direction aren't physically possible. We should ignore them.
-        #
-        x, y = self._HAT_DIRECTION_MAPPING.get(max(self._directions_held) if self._directions_held else None)
+        direction = max(self._directions_held) if self._directions_held else None
+        if direction == self._last_emitted_direction:
+            return
+
+        x, y = self._HAT_DIRECTION_MAPPING.get(direction)
 
         self._out_device.write(ecodes.EV_ABS, ecodes.ABS_HAT0X, x)
         self._out_device.write(ecodes.EV_ABS, ecodes.ABS_HAT0Y, y)
         self._out_device.syn()
 
-        self._dpad_pending = False
+        self._last_emitted_direction = direction
 
     def run(self):
         with self._in_device.grab_context():
@@ -318,10 +318,12 @@ class FourWayHatFilter:
             for event in self._in_device.read_loop():
                 if event.type == ecodes.EV_ABS and event.code in self._HAT_AXIS_MAPPING:
                     self._update_axis(event.code, event.value)
+                    self._emit_dpad_pending = True
                     continue
 
-                if self._dpad_pending and event.type == ecodes.EV_SYN and event.code == ecodes.SYN_REPORT:
+                if self._emit_dpad_pending and event.type == ecodes.EV_SYN and event.code == ecodes.SYN_REPORT:
                     self._emit_dpad()
+                    self._emit_dpad_pending = False
                     continue
 
                 self._out_device.write_event(event)
